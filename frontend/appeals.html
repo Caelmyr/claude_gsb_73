@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>作弊报告与申诉 - 在线代码评测与竞赛系统</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <div id="nav"></div>
+
+  <div class="container">
+    <div class="page-head">
+      <div>
+        <h1 id="pageTitle">🛡️ 作弊报告与申诉</h1>
+        <div class="sub" id="pageSub">系统自动标记的疑似代码相似提交，可在此查看与申诉</div>
+      </div>
+      <button class="btn btn-outline" onclick="reloadPage()">🔄 刷新</button>
+    </div>
+
+    <div id="bannerSlot"></div>
+    <div class="toolbar" id="adminFilters"></div>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead id="listHead"></thead>
+          <tbody id="listBody">
+            <tr><td class="empty"><span class="spinner"></span> 加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/app.js"></script>
+  <script>
+  (function () {
+    "use strict";
+    OJ.boot("appeals");
+
+    const STATUS_LABEL = { open: "待处理", upheld: "维持原判", revoked: "已撤销" };
+    const STATUS_BADGE = { open: "open", upheld: "upheld", revoked: "revoked" };
+    const ADMIN_TABS = [
+      ["all", "全部"], ["appealed", "已申诉"], ["open", "待处理"],
+      ["upheld", "维持原判"], ["revoked", "已撤销"],
+    ];
+
+    let currentUser = null;
+    let isAdmin = false;
+    let activeTab = "all";
+    let reports = [];
+
+    function statusBadge(r) {
+      const appealed = r.has_appeal;
+      if (r.status === "open" && appealed) return '<span class="badge appealed">申诉待处理</span>';
+      if (r.status === "open") return '<span class="badge open">待处理</span>';
+      if (r.status === "upheld") return '<span class="badge upheld">维持原判</span>';
+      return '<span class="badge revoked">已撤销</span>';
+    }
+
+    function rowClass(r) {
+      if (r.status === "upheld") return "row-upheld";
+      if (r.status === "revoked") return "row-revoked";
+      return r.has_appeal ? "row-flagged" : "";
+    }
+
+    // ---------- 加载 ---------- */
+    async function reloadPage() {
+      try {
+        currentUser = await OJ.requireAuth();
+      } catch (e) { return; }
+      isAdmin = currentUser.role === "admin";
+      renderChrome();
+      try {
+        const data = isAdmin
+          ? await OJ.api("/cheat/reports?status=" + encodeURIComponent(activeTab))
+          : await OJ.api("/cheat/my-reports");
+        reports = data.items || [];
+        renderList(data);
+        // 支持 /appeals.html#<report_id> 直达详情
+        const hash = location.hash.slice(1);
+        if (hash && reports.some(r => r.report_id === hash)) {
+          history.replaceState(null, "", location.pathname);
+          openDetail(hash);
+        }
+      } catch (e) {
+        OJ.el("listBody").innerHTML =
+          `<tr><td class="empty">${OJ.esc(e.message)}</td></tr>`;
+      }
+    }
+
+    function renderChrome() {
+      OJ.el("pageTitle").textContent = isAdmin ? "🛡️ 作弊报告处理" : "🛡️ 我的作弊标记";
+      OJ.el("pageSub").textContent = isAdmin
+        ? "查看每份相似提交报告的代码对比，处理用户申诉"
+        : "若你认为系统误判，可以查看详情并提交申诉说明";
+      OJ.el("adminFilters").innerHTML = isAdmin
+        ? ADMIN_TABS.map(([k, label]) =>
+            `<button class="filter-chip ${activeTab === k ? "active" : ""}" onclick="switchTab('${k}')">${label}</button>`
+          ).join("")
+        : "";
+    }
+
+    function switchTab(tab) { activeTab = tab; reloadPage(); }
+
+    // ---------- 列表 ---------- */
+    function renderList(data) {
+      const head = OJ.el("listHead");
+      const body = OJ.el("listBody");
+      if (isAdmin) {
+        head.innerHTML = `<tr>
+          <th>用户 A</th><th>用户 B</th><th>题目</th>
+          <th class="text-center">相似度</th><th class="text-center">申诉</th>
+          <th class="text-center">状态</th><th>标记时间</th><th></th>
+        </tr>`;
+        const pendingHint = data.pending_count
+          ? `<div class="alert-banner warn">⚠️ 有 <b>${data.pending_count}</b> 份申诉等待处理</div>` : "";
+        OJ.el("bannerSlot").innerHTML = pendingHint;
+      } else {
+        head.innerHTML = `<tr>
+          <th>对方用户</th><th>题目</th>
+          <th class="text-center">相似度</th><th class="text-center">我的申诉</th>
+          <th class="text-center">状态</th><th>标记时间</th><th></th>
+        </tr>`;
+        const flagged = data.unresolved || 0;
+        const pending = data.pending || 0;
+        let banner = "";
+        if (flagged) banner = `<div class="alert-banner warn">⚠️ 你有 <b>${flagged}</b> 条作弊标记尚未申诉，可点击「详情/申诉」说明情况</div>`;
+        else if (pending) banner = `<div class="alert-banner info">📨 你有 <b>${pending}</b> 份申诉正在等待管理员处理</div>`;
+        OJ.el("bannerSlot").innerHTML = banner;
+      }
+
+      if (!reports.length) {
+        const cols = isAdmin ? 8 : 7;
+        body.innerHTML = `<tr><td colspan="${cols}" class="empty">暂无报告</td></tr>`;
+        return;
+      }
+
+      body.innerHTML = reports.map(r => {
+        const a = r.a || {}, b = r.b || {};
+        if (isAdmin) {
+          return `<tr class="${rowClass(r)}">
+            <td>${OJ.esc(a.username || "-")}</td>
+            <td>${OJ.esc(b.username || "-")}</td>
+            <td class="mono">${OJ.esc(a.problem_id || "")}</td>
+            <td class="text-center"><span class="badge ${r.similarity >= 0.95 ? "RE" : "orange"}">${(r.similarity * 100).toFixed(1)}%</span></td>
+            <td class="text-center">${appealSummary(r)}</td>
+            <td class="text-center">${statusBadge(r)}</td>
+            <td class="mono muted">${OJ.fmtTime(r.reported_at)}</td>
+            <td class="text-right"><button class="btn btn-outline btn-sm" onclick="openDetail('${r.report_id}')">详情${r.has_appeal ? " / 处理" : ""}</button></td>
+          </tr>`;
+        }
+        const other = r.my_side === "a" ? b : a;
+        return `<tr class="${rowClass(r)}">
+          <td>${OJ.esc(other.username || "-")}</td>
+          <td class="mono">${OJ.esc(a.problem_id || "")}</td>
+          <td class="text-center"><span class="badge ${r.similarity >= 0.95 ? "RE" : "orange"}">${(r.similarity * 100).toFixed(1)}%</span></td>
+          <td class="text-center">${r.my_appeal ? '<span class="badge PENDING">已提交</span>' : '<span class="muted">未申诉</span>'}</td>
+          <td class="text-center">${statusBadge(r)}</td>
+          <td class="mono muted">${OJ.fmtTime(r.reported_at)}</td>
+          <td class="text-right"><button class="btn btn-primary btn-sm" onclick="openDetail('${r.report_id}')">${r.my_appeal ? "查看" : "详情 / 申诉"}</button></td>
+        </tr>`;
+      }).join("");
+    }
+
+    function appealSummary(r) {
+      const n = (r.appeals || []).length;
+      if (!n) return '<span class="muted">无</span>';
+      if (r.status === "open") return `<span class="badge appealed">${n} 份待处理</span>`;
+      return `<span class="badge AC">${n} 份已处理</span>`;
+    }
+
+    // ---------- 详情 ---------- */
+    async function openDetail(rid) {
+      try {
+        if (isAdmin) await openAdminDetail(rid);
+        else await openUserDetail(rid);
+      } catch (e) { OJ.toast(e.message || "加载失败", "error"); }
+    }
+
+    // ----- 管理员详情 ----- */
+    async function openAdminDetail(rid) {
+      const d = await OJ.api("/cheat/reports/" + rid);
+      const sa = d.submissions.a || {}, sb = d.submissions.b || {};
+      const diffRows = renderDiffRows(d.diff);
+      const appealsHtml = (d.appeals || []).map(ap => renderAppealBox(ap, d, true)).join("")
+        || '<div class="empty">暂无申诉</div>';
+
+      const body = `
+        <div class="stat-grid">
+          <div class="stat-card"><div class="val">${(d.similarity * 100).toFixed(1)}%</div><div class="lbl">判定相似度（Jaccard）</div></div>
+          <div class="stat-card"><div class="val">${pct(d.diff.similarity.raw_line)}</div><div class="lbl">原始行相似度</div></div>
+          <div class="stat-card"><div class="val">${pct(d.diff.similarity.normalized)}</div><div class="lbl">归一化相似度</div></div>
+          <div class="stat-card"><div class="val">${statusBadge(d)}</div><div class="lbl">当前状态</div></div>
+        </div>
+
+        <div class="card" style="box-shadow:none;background:var(--surface-2)">
+          <div class="card-title">提交信息</div>
+          <div class="grid-2">
+            <div><b>A：${OJ.esc(d.a.username)}</b>
+              <div class="muted mono" style="font-size:12px">${OJ.esc(sa.id || d.a.id)} · ${OJ.esc(sa.language || "?")} · ${OJ.verdictBadge(sa.status || "?")} ${sa.score ?? ""}分</div>
+              <div class="muted" style="font-size:12px">${OJ.fmtTime(sa.created_at)}</div>
+            </div>
+            <div><b>B：${OJ.esc(d.b.username)}</b>
+              <div class="muted mono" style="font-size:12px">${OJ.esc(sb.id || d.b.id)} · ${OJ.esc(sb.language || "?")} · ${OJ.verdictBadge(sb.status || "?")} ${sb.score ?? ""}分</div>
+              <div class="muted" style="font-size:12px">${OJ.fmtTime(sb.created_at)}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="box-shadow:none;background:var(--surface-2)">
+          <div class="card-title">雷同片段 <span class="hint">两份代码中结构相同的最长公共代码块</span></div>
+          ${renderMatchedBlocks(d.diff.matched_blocks)}
+        </div>
+
+        <div class="card-title mt-16">逐行代码对比 <span class="hint">红底=仅 A，绿底=仅 B，无色=相同</span></div>
+        <div class="diff-wrap"><table class="diff">
+          <thead><tr><th colspan="2">A · ${OJ.esc(d.a.username)}</th><th colspan="2">B · ${OJ.esc(d.b.username)}</th></tr></thead>
+          <tbody>${diffRows}</tbody>
+        </table></div>
+
+        <details class="mt-16">
+          <summary class="btn btn-outline btn-sm" style="display:inline-flex">查看归一化代码（改变量名/加注释的抄袭在此完全一致）</summary>
+          <div class="grid-2 mt-8">
+            <pre class="code light" style="max-height:300px">${OJ.esc(d.normalized.a)}</pre>
+            <pre class="code light" style="max-height:300px">${OJ.esc(d.normalized.b)}</pre>
+          </div>
+        </details>
+
+        <div class="card-title mt-16">用户申诉</div>
+        ${appealsHtml}
+        ${renderResolvePanel(d)}`;
+
+      const mask = OJ.openModal("报告详情 · " + (d.a.problem_id || ""), body);
+      mask.querySelector(".modal").style.maxWidth = "1000px";
+      mask._data = d;
+    }
+
+    function renderResolvePanel(d) {
+      if (d.status !== "open" || !d.has_appeal) return "";
+      return `
+        <div class="appeal-box mine" style="margin-top:14px">
+          <label class="a-meta">处理意见（可选，会展示给申诉用户）</label>
+          <textarea id="resolveNote" rows="2" maxlength="1000" placeholder="例如：代码结构与关键实现高度雷同，申诉理由不充分 / 确属独立完成，撤销标记"></textarea>
+          <div class="flex gap-8 mt-8">
+            <button class="btn btn-danger" onclick="resolveReport('${d.report_id}','upheld')">维持原判</button>
+            <button class="btn btn-primary" style="background:var(--green)" onclick="resolveReport('${d.report_id}','revoked')">撤销标记</button>
+          </div>
+        </div>`;
+    }
+
+    async function resolveReport(rid, decision) {
+      const word = decision === "upheld" ? "维持原判" : "撤销作弊标记";
+      if (!await OJ.confirmDialog(`确认对该申诉作出「${word}」处理？`)) return;
+      const note = (OJ.el("resolveNote") || {}).value || "";
+      try {
+        await OJ.api("/cheat/reports/" + rid + "/resolve", {
+          method: "POST", body: { decision, note },
+        });
+        OJ.toast("已" + word, "success");
+        document.querySelector(".modal-mask")?.remove();
+        reloadPage();
+      } catch (e) { OJ.toast(e.message, "error"); }
+    }
+
+    // ----- 用户详情 ----- */
+    async function openUserDetail(rid) {
+      const d = await OJ.api("/cheat/my-reports/" + rid);
+      const other = d.other || {};
+      const blocksHtml = renderMatchedBlocks(d.matched_blocks);
+      const resolutionHtml = d.status === "open" ? "" : `
+        <div class="appeal-box ${d.status === "upheld" ? "resolved-upheld" : "resolved-revoked"}">
+          <div class="a-meta">管理员处理结果 · ${OJ.fmtTime((d.resolution || {}).resolved_at)}</div>
+          <div style="font-weight:700;margin:4px 0">
+            ${d.status === "upheld" ? "❌ 维持原判：作弊标记保留" : "✅ 已撤销：作弊标记已取消"}
+          </div>
+          ${(d.resolution || {}).note ? `<div class="appeal-text muted">${OJ.esc(d.resolution.note)}</div>` : ""}
+        </div>`;
+
+      const body = `
+        <div class="stat-grid">
+          <div class="stat-card"><div class="val">${(d.similarity * 100).toFixed(1)}%</div><div class="lbl">系统判定相似度</div></div>
+          <div class="stat-card"><div class="val">${OJ.esc(other.username || "-")}</div><div class="lbl">相似提交来自</div></div>
+          <div class="stat-card"><div class="val">${OJ.esc(d.a.problem_id || "")}</div><div class="lbl">题目</div></div>
+          <div class="stat-card"><div class="val">${statusBadge(d)}</div><div class="lbl">状态</div></div>
+        </div>
+
+        ${d.my_appeal ? `
+          <div class="appeal-box mine">
+            <div class="a-meta">我的申诉 · 提交于 ${OJ.fmtTime(d.my_appeal.submitted_at)}</div>
+            <div class="appeal-text">${OJ.esc(d.my_appeal.text)}</div>
+          </div>` : ""}
+        ${resolutionHtml}
+
+        <div class="card-title">系统发现的雷同位置（基于你的代码）</div>
+        ${blocksHtml}
+
+        <details class="mt-16">
+          <summary class="btn btn-outline btn-sm" style="display:inline-flex">查看我被标记的提交代码</summary>
+          <pre class="code mt-8">${OJ.esc((d.my_submission || {}).code || "（代码已不可用）")}</pre>
+        </details>
+
+        ${renderAppealForm(d)}`;
+
+      const mask = OJ.openModal("标记详情", body);
+      mask.querySelector(".modal").style.maxWidth = "880px";
+    }
+
+    function renderAppealForm(d) {
+      if (d.status !== "open") {
+        return `<div class="alert-banner info mt-16">📌 ${
+          d.my_appeal ? "该申诉已由管理员处理，结果如上。" : "该报告尚未提交申诉，且已被处理；如有疑问请联系管理员。"
+        }</div>`;
+      }
+      return `
+        <div class="appeal-box mine mt-16">
+          <label>${d.my_appeal ? "更新申诉说明" : "提交申诉说明"}</label>
+          <textarea id="appealText" rows="5" maxlength="2000"
+            placeholder="请说明代码为独立完成的理由，例如：实现思路、参考来源、与对方代码的实质差异等">${OJ.esc(d.my_appeal ? d.my_appeal.text : "")}</textarea>
+          <div class="hint">提交后管理员可在后台看到你的说明并复核；处理期间可随时更新。</div>
+          <button class="btn btn-primary mt-8" onclick="submitAppeal('${d.report_id}')">${d.my_appeal ? "更新申诉" : "提交申诉"}</button>
+        </div>`;
+    }
+
+    async function submitAppeal(rid) {
+      const text = (OJ.el("appealText") || {}).value || "";
+      if (!text.trim()) { OJ.toast("申诉说明不能为空", "error"); return; }
+      try {
+        await OJ.api("/cheat/my-reports/" + rid + "/appeal", {
+          method: "POST", body: { text },
+        });
+        OJ.toast("申诉已提交，等待管理员处理", "success");
+        document.querySelector(".modal-mask")?.remove();
+        reloadPage();
+      } catch (e) { OJ.toast(e.message, "error"); }
+    }
+
+    // ---------- 渲染辅助 ---------- */
+    function pct(v) { return (v == null ? "-" : (v * 100).toFixed(1) + "%"); }
+
+    function renderAppealBox(ap, d, isAdminView) {
+      const sideName = ap.side === "a" ? (d.a || {}).username : (d.b || {}).username;
+      const cls = d.status === "upheld" ? "resolved-upheld"
+        : d.status === "revoked" ? "resolved-revoked" : "mine";
+      let resultLine = "";
+      if (d.resolution) {
+        resultLine = `<div class="a-meta">处理结果：<b>${d.status === "upheld" ? "维持原判" : "撤销标记"}</b>
+          · ${OJ.esc(d.resolution.resolved_by_name || "管理员")} · ${OJ.fmtTime(d.resolution.resolved_at)}
+          ${d.resolution.note ? "<br>意见：" + OJ.esc(d.resolution.note) : ""}</div>`;
+      }
+      return `
+        <div class="appeal-box ${cls}">
+          <div class="a-meta">${isAdminView ? "申诉方：<b>" + OJ.esc(sideName) + "</b>（" + ap.side.toUpperCase() + "方） · " : ""}${OJ.fmtTime(ap.submitted_at)}</div>
+          <div class="appeal-text">${OJ.esc(ap.text)}</div>
+          ${resultLine}
+        </div>`;
+    }
+
+    function renderMatchedBlocks(blocks) {
+      if (!blocks || !blocks.length) return '<div class="empty" style="padding:16px">未发现长公共代码块（可能是经过改名/重排的相似，请看归一化代码）</div>';
+      return blocks.map(b => `
+        <div class="matched-item">
+          <div class="m-meta">相同 ${b.lines} 行 · A 第 ${b.a_start} 行起 / B 第 ${b.b_start} 行起</div>
+          <pre class="code" style="max-height:180px;margin:0">${OJ.esc(b.preview)}${b.truncated ? "\n……" : ""}</pre>
+        </div>`).join("");
+    }
+
+    function renderDiffRows(diff) {
+      return (diff.rows || []).map(r => {
+        const a = r.a, b = r.b;
+        return `<tr class="${r.type}">
+          <td class="gutter">${a ? a.no : ""}</td>
+          <td class="code-cell side-a ${a ? "" : "empty-cell"}">${a ? escLine(a.text) : ""}</td>
+          <td class="gutter">${b ? b.no : ""}</td>
+          <td class="code-cell side-b ${b ? "" : "empty-cell"}">${b ? escLine(b.text) : ""}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    function escLine(s) {
+      return OJ.esc(s === "" ? " " : s);
+    }
+
+    // 暴露给行内 onclick
+    globalThis.switchTab = switchTab;
+    globalThis.openDetail = openDetail;
+    globalThis.resolveReport = resolveReport;
+    globalThis.submitAppeal = submitAppeal;
+    globalThis.reloadPage = reloadPage;
+
+    reloadPage();
+  })();
+  </script>
+</body>
+</html>

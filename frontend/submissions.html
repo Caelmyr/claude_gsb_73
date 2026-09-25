@@ -24,6 +24,8 @@
       </div>
     </div>
 
+    <div id="flagBanner"></div>
+
     <div class="card">
       <div class="table-wrap">
         <table>
@@ -44,6 +46,19 @@
   <script>
     OJ.boot("submissions");
     let problemNames = {};
+
+    async function loadFlagBanner() {
+      try {
+        const n = await OJ.api("/cheat/notifications");
+        const total = (n.flagged || 0) + (n.pending || 0);
+        if (!total) { OJ.el("flagBanner").innerHTML = ""; return; }
+        const msg = n.flagged
+          ? `⚠️ 你有 ${n.flagged} 条作弊相似标记尚未申诉`
+          : `📨 你有 ${n.pending} 份作弊申诉正在等待处理`;
+        OJ.el("flagBanner").innerHTML =
+          `<div class="alert-banner warn">${msg} · <a href="/appeals.html">前往查看与申诉</a></div>`;
+      } catch (e) { /* 未登录等情况静默 */ }
+    }
 
     async function load() {
       const mine = OJ.el("mineFilter").value === "1";
@@ -110,6 +125,7 @@
     }
 
     load();
+    loadFlagBanner();
     setInterval(() => { if (!document.querySelector(".modal-mask")) load(); }, 5000);
   </script>
 </body>

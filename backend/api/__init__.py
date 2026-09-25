@@ -91,10 +91,11 @@ from backend.api.leaderboard import leaderboard_bp  # noqa: E402
 from backend.api.forum import forum_bp          # noqa: E402
 from backend.api.stats import stats_bp          # noqa: E402
 from backend.api.settings import settings_bp    # noqa: E402
+from backend.api.appeals import appeals_bp      # noqa: E402
 
 ALL_BLUEPRINTS = [
     auth_bp, problems_bp, contests_bp, submissions_bp,
-    leaderboard_bp, forum_bp, stats_bp, settings_bp,
+    leaderboard_bp, forum_bp, stats_bp, settings_bp, appeals_bp,
 ]
 
 

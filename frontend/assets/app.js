@@ -69,6 +69,7 @@
     ["/contest.html", "竞赛", "contest"],
     ["/forum.html", "讨论区", "forum"],
     ["/stats.html", "统计报表", "stats"],
+    ["/appeals.html", "作弊申诉", "appeals", false],
     ["/users.html", "用户管理", "users", true],
     ["/settings.html", "系统设置", "settings", true],
   ];
@@ -81,7 +82,7 @@
     let links = "";
     for (const [href, label, key, adminOnly] of NAV) {
       if (adminOnly && !admin) continue;
-      links += `<a href="${href}" class="${active === key ? "active" : ""}">${label}</a>`;
+      links += `<a href="${href}" class="${active === key ? "active" : ""}">${label}<span class="nav-badge hidden" data-nav-badge="${key}"></span></a>`;
     }
     el.innerHTML = `
       <div class="nav">
@@ -179,9 +180,24 @@
     });
   }
 
+  /* ---------- 申诉徽标 ---------- */
+  async function loadNavBadge() {
+    if (!store.token) return;
+    try {
+      const n = await api("/cheat/notifications");
+      const count = isAdmin() ? (n.pending || 0) : (n.flagged || 0) + (n.pending || 0);
+      const badge = document.querySelector('[data-nav-badge="appeals"]');
+      if (badge) {
+        badge.textContent = count > 99 ? "99+" : String(count);
+        badge.classList.toggle("hidden", count <= 0);
+      }
+    } catch (e) { /* 未登录或接口不可用时静默 */ }
+  }
+
   /* ---------- 页面引导 ---------- */
   async function boot(activeKey) {
     renderNav(activeKey);
+    loadNavBadge();
     // 若 URL 带 login=1 且未登录，跳登录
     if (new URLSearchParams(location.search).get("login") === "1" && !currentUser()) {
       // 登录在题目列表页内联处理

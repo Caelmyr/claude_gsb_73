@@ -42,9 +42,9 @@
     </div>
 
     <div class="card hidden" id="cheatCard">
-      <div class="card-title">🛡️ 防作弊报告 <span class="hint">代码相似度检测（仅管理员可见）</span></div>
+      <div class="card-title">🛡️ 防作弊报告 <span class="hint">代码相似度检测（仅管理员可见）· <a href="/appeals.html">前往申诉处理台 →</a></span></div>
       <div class="table-wrap"><table>
-        <thead><tr><th>用户 A</th><th>用户 B</th><th>题目</th><th class="text-center">相似度</th><th>提交时间</th></tr></thead>
+        <thead><tr><th>用户 A</th><th>用户 B</th><th>题目</th><th class="text-center">相似度</th><th class="text-center">状态</th><th>提交时间</th><th></th></tr></thead>
         <tbody id="cheatBody"></tbody>
       </table></div>
     </div>
@@ -135,19 +135,28 @@
       return map[v] || "#64748b";
     }
 
+    function cheatStatusBadge(x) {
+      if (x.status === "upheld") return '<span class="badge upheld">维持原判</span>';
+      if (x.status === "revoked") return '<span class="badge revoked">已撤销</span>';
+      if (x.appeals && x.appeals.length) return '<span class="badge appealed">申诉待处理</span>';
+      return '<span class="badge open">待处理</span>';
+    }
+
     async function loadCheatReport() {
       if (!OJ.isAdmin()) return;
       try {
-        const r = await OJ.api("/stats/cheat-report");
-        const reports = r.reports || [];
+        const r = await OJ.api("/cheat/reports?status=all");
+        const reports = r.items || [];
         OJ.el("cheatCard").classList.toggle("hidden", !reports.length);
-        OJ.el("cheatBody").innerHTML = reports.map(x => `
-          <tr>
+        OJ.el("cheatBody").innerHTML = reports.slice(0, 20).map(x => `
+          <tr class="${x.status === "upheld" ? "row-upheld" : x.status === "revoked" ? "row-revoked" : ""}">
             <td>${OJ.esc(x.a ? x.a.username : "-")}</td>
             <td>${OJ.esc(x.b ? x.b.username : "-")}</td>
             <td class="mono">${OJ.esc(x.a ? x.a.problem_id : "")}</td>
             <td class="text-center"><span class="badge ${x.similarity >= 0.95 ? "RE" : "orange"}">${(x.similarity * 100).toFixed(1)}%</span></td>
+            <td class="text-center">${cheatStatusBadge(x)}</td>
             <td class="mono muted">${OJ.fmtTime(x.a ? x.a.created_at : "")}</td>
+            <td class="text-right"><a class="btn btn-outline btn-sm" href="/appeals.html#${OJ.esc(x.report_id)}">详情</a></td>
           </tr>`).join("");
       } catch (e) { /* 忽略 */ }
     }
