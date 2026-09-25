@@ -69,6 +69,7 @@
     ["/contest.html", "竞赛", "contest"],
     ["/forum.html", "讨论区", "forum"],
     ["/stats.html", "统计报表", "stats"],
+    ["/appeals.html", "我的标记/申诉", "appeals"],
     ["/users.html", "用户管理", "users", true],
     ["/settings.html", "系统设置", "settings", true],
   ];
@@ -78,10 +79,16 @@
     if (!el) return;
     const user = currentUser();
     const admin = isAdmin();
+    const flags = (user && user.cheat_flags) || {};
+    const openCount = (flags.pending || 0) + (flags.appealed || 0);
     let links = "";
     for (const [href, label, key, adminOnly] of NAV) {
       if (adminOnly && !admin) continue;
-      links += `<a href="${href}" class="${active === key ? "active" : ""}">${label}</a>`;
+      let badge = "";
+      if (key === "appeals" && user && openCount > 0) {
+        badge = ` <span class="nav-badge" title="有待处理的作弊标记/申诉">${openCount > 99 ? "99+" : openCount}</span>`;
+      }
+      links += `<a href="${href}" class="${active === key ? "active" : ""}">${label}${badge}</a>`;
     }
     el.innerHTML = `
       <div class="nav">
@@ -185,6 +192,14 @@
     // 若 URL 带 login=1 且未登录，跳登录
     if (new URLSearchParams(location.search).get("login") === "1" && !currentUser()) {
       // 登录在题目列表页内联处理
+    }
+    // 后台刷新一次用户信息（含作弊标记角标），再重绘导航
+    if (store.token) {
+      try {
+        const u = await api("/auth/me");
+        store.user = u;
+        renderNav(activeKey);
+      } catch (e) { /* token 失效等场景忽略，具体页会自行处理 */ }
     }
   }
 

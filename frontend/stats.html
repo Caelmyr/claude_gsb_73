@@ -42,9 +42,18 @@
     </div>
 
     <div class="card hidden" id="cheatCard">
-      <div class="card-title">🛡️ 防作弊报告 <span class="hint">代码相似度检测（仅管理员可见）</span></div>
+      <div class="card-title flex-between">
+        <span>🛡️ 防作弊报告 <span class="hint">代码相似度检测（仅管理员可见）</span></span>
+        <select id="cheatFilter" class="form-control" style="width:auto;font-size:12px;padding:4px 8px" onchange="renderCheatList()">
+          <option value="">全部</option>
+          <option value="pending">待申诉</option>
+          <option value="appealed">待复核</option>
+          <option value="upheld">维持原判</option>
+          <option value="revoked">已撤销</option>
+        </select>
+      </div>
       <div class="table-wrap"><table>
-        <thead><tr><th>用户 A</th><th>用户 B</th><th>题目</th><th class="text-center">相似度</th><th>提交时间</th></tr></thead>
+        <thead><tr><th>用户 A（被标记）</th><th>用户 B</th><th>题目</th><th class="text-center">相似度</th><th class="text-center">申诉状态</th><th>标记时间</th><th></th></tr></thead>
         <tbody id="cheatBody"></tbody>
       </table></div>
     </div>
@@ -135,21 +144,152 @@
       return map[v] || "#64748b";
     }
 
+    let cheatReports = [];
+    const CHEAT_STATE = {
+      pending: { cls: "orange", text: "待申诉" },
+      appealed: { cls: "PENDING", text: "待复核" },
+      upheld: { cls: "WA", text: "维持原判" },
+      revoked: { cls: "AC", text: "已撤销" },
+    };
+    function cheatStateBadge(state) {
+      const s = CHEAT_STATE[state] || CHEAT_STATE.pending;
+      return `<span class="badge ${s.cls}">${s.text}</span>`;
+    }
+
     async function loadCheatReport() {
       if (!OJ.isAdmin()) return;
       try {
-        const r = await OJ.api("/stats/cheat-report");
-        const reports = r.reports || [];
-        OJ.el("cheatCard").classList.toggle("hidden", !reports.length);
-        OJ.el("cheatBody").innerHTML = reports.map(x => `
-          <tr>
-            <td>${OJ.esc(x.a ? x.a.username : "-")}</td>
-            <td>${OJ.esc(x.b ? x.b.username : "-")}</td>
-            <td class="mono">${OJ.esc(x.a ? x.a.problem_id : "")}</td>
-            <td class="text-center"><span class="badge ${x.similarity >= 0.95 ? "RE" : "orange"}">${(x.similarity * 100).toFixed(1)}%</span></td>
-            <td class="mono muted">${OJ.fmtTime(x.a ? x.a.created_at : "")}</td>
-          </tr>`).join("");
+        const r = await OJ.api("/cheat-reports");
+        cheatReports = r.items || [];
+        renderCheatList();
       } catch (e) { /* 忽略 */ }
+    }
+
+    function renderCheatList() {
+      const filter = OJ.el("cheatFilter").value;
+      const reports = filter ? cheatReports.filter(x => x.state === filter) : cheatReports;
+      OJ.el("cheatCard").classList.toggle("hidden", !cheatReports.length);
+      OJ.el("cheatBody").innerHTML = reports.map(x => `
+        <tr>
+          <td>${OJ.esc(x.a ? x.a.username : "-")}</td>
+          <td>${OJ.esc(x.b ? x.b.username : "-")}</td>
+          <td>${OJ.esc(x.problem_title || "")} <span class="muted mono">${OJ.esc(x.a ? x.a.problem_id : "")}</span></td>
+          <td class="text-center"><span class="badge ${x.similarity >= 0.95 ? "WA" : "orange"}">${(x.similarity * 100).toFixed(1)}%</span></td>
+          <td class="text-center">${cheatStateBadge(x.state)}</td>
+          <td class="mono muted">${OJ.fmtTime(x.detected_at || (x.a ? x.a.created_at : ""))}</td>
+          <td class="text-right"><button class="btn btn-outline btn-sm" onclick="viewCheatDetail('${OJ.esc(x.rid)}')">详情${x.state === "appealed" ? ` / 处理` : ""}</button></td>
+        </tr>`).join("")
+        || `<tr><td colspan="7" class="empty">该状态下暂无报告</td></tr>`;
+    }
+
+    function adminDiffRows(diff) {
+      return (diff.rows || []).map(r => {
+        const a = r.a, b = r.b;
+        return `<tr class="diff-row diff-${r.type}">
+          <td class="ln">${a ? a.no : ""}</td>
+          <td class="code-cell">${a ? OJ.esc(a.text || " ") : ""}</td>
+          <td class="ln">${b ? b.no : ""}</td>
+          <td class="code-cell">${b ? OJ.esc(b.text || " ") : ""}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    async function viewCheatDetail(rid) {
+      try {
+        const d = await OJ.api("/cheat-reports/" + rid);
+        const diff = d.diff || { rows: [], stats: {}, unified: "" };
+        const st = diff.stats || {};
+        const appeal = d.appeal || {};
+        const handled = d.state === "upheld" || d.state === "revoked";
+        const review = (d.reviews || []).slice(-1)[0] || {};
+
+        let appealBlock;
+        if (!appeal.content) {
+          appealBlock = `<div class="result-banner banner-open">
+              <span class="banner-title">⏳ 用户尚未提交申诉</span>
+              <span class="muted">用户提交申诉后才能给出复核结论</span>
+            </div>`;
+        } else if (handled) {
+          const upheld = d.state === "upheld";
+          appealBlock = `<div class="result-banner ${upheld ? "banner-upheld" : "banner-revoked"}">
+              <span class="banner-title">${upheld ? "🔴 已处理：维持原判" : "🟢 已处理：撤销标记"}</span>
+            </div>
+            <div class="appeal-box">
+              <div class="appeal-meta">${OJ.esc(d.a.username)} 的申诉说明 · ${OJ.fmtTime(appeal.submitted_at)}</div>
+              <div class="appeal-content">${OJ.esc(appeal.content)}</div>
+              ${review.note ? `<div class="review-note"><b>复核备注：</b>${OJ.esc(review.note)}</div>` : ""}
+              <div class="appeal-meta muted">复核人：${OJ.esc(review.admin_name || "-")} · ${OJ.fmtTime(review.reviewed_at)}</div>
+            </div>`;
+        } else {
+          appealBlock = `<div class="result-banner banner-pending">
+              <span class="banner-title">📨 用户已申诉，等待处理</span>
+            </div>
+            <div class="appeal-box">
+              <div class="appeal-meta">${OJ.esc(d.a.username)} 的申诉说明 · ${OJ.fmtTime(appeal.submitted_at)}</div>
+              <div class="appeal-content">${OJ.esc(appeal.content)}</div>
+            </div>
+            <div class="form-group mt-8">
+              <label class="form-label">复核备注（可选）</label>
+              <textarea id="reviewNote" class="form-control" rows="2" maxlength="1000" placeholder="将随结论展示给用户"></textarea>
+            </div>
+            <div class="flex gap-8">
+              <button class="btn btn-danger" onclick="decide('${OJ.esc(d.rid)}','upheld')">维持原判</button>
+              <button class="btn btn-success" onclick="decide('${OJ.esc(d.rid)}','revoked')">撤销标记</button>
+            </div>`;
+        }
+
+        const body = `
+          <div class="detail-meta flex wrap gap-12">
+            <span>题目：<b>${OJ.esc(d.problem_title || d.problem_id)}</b></span>
+            <span>相似度：<span class="badge ${d.similarity >= 0.95 ? "WA" : "orange"}">${(d.similarity * 100).toFixed(1)}%</span></span>
+            <span>行匹配率：<b class="mono">${((st.line_match_ratio || 0) * 100).toFixed(1)}%</b></span>
+            <span>一致行 <b class="mono">${st.equal || 0}</b> / 相近 <b class="mono">${st.replace || 0}</b> / A独有 <b class="mono">${st.delete || 0}</b> / B独有 <b class="mono">${st.insert || 0}</b></span>
+            <span>${cheatStateBadge(d.state)}</span>
+          </div>
+          <div class="diff-legend mt-8">
+            <span><i class="lg lg-equal"></i>完全一致</span>
+            <span><i class="lg lg-similar"></i>结构相近</span>
+            <span><i class="lg lg-delete"></i>仅 A 有</span>
+            <span><i class="lg lg-insert"></i>仅 B 有</span>
+          </div>
+          <div class="diff-toggle mt-8">
+            <button class="btn btn-outline btn-sm active" data-view="side" onclick="switchDiff(this,'side')">并排对比</button>
+            <button class="btn btn-outline btn-sm" data-view="unified" onclick="switchDiff(this,'unified')">统一 Diff</button>
+          </div>
+          <div id="diffSide" class="diff-wrap mt-8">
+            <table class="diff-table"><tbody>
+              <tr class="diff-head"><td></td><td>A：${OJ.esc(d.a.username)}（${OJ.esc(d.a.submission_id)}，${OJ.fmtTime(d.a.created_at)}）</td><td></td><td>B：${OJ.esc(d.b.username)}（${OJ.esc(d.b.submission_id)}，${OJ.fmtTime(d.b.created_at)}）</td></tr>
+              ${adminDiffRows(diff)}
+            </tbody></table>
+          </div>
+          <pre id="diffUnified" class="code light hidden" style="max-height:420px">${OJ.esc(diff.unified || "") || "两份代码完全一致"}</pre>
+          <div class="mt-16"></div>
+          ${appealBlock}
+          <div class="modal-actions"><button class="btn btn-outline" onclick="this.closest('.modal-mask').remove();loadCheatReport()">关闭</button></div>`;
+        OJ.openModal("作弊报告详情", body).querySelector(".modal").style.maxWidth = "1040px";
+      } catch (e) { OJ.toast(e.message, "error"); }
+    }
+
+    function switchDiff(btn, view) {
+      document.querySelectorAll(".diff-toggle .btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      OJ.el("diffSide").classList.toggle("hidden", view !== "side");
+      OJ.el("diffUnified").classList.toggle("hidden", view !== "unified");
+    }
+
+    async function decide(rid, decision) {
+      const word = decision === "upheld" ? "维持原判" : "撤销标记";
+      if (!await OJ.confirmDialog(`确认对该申诉做出「${word}」处理？`)) return;
+      const noteEl = OJ.el("reviewNote");
+      try {
+        await OJ.api("/cheat-reports/" + rid + "/decision", {
+          method: "POST",
+          body: { decision, note: noteEl ? noteEl.value : "" },
+        });
+        OJ.toast("已处理：" + word, "success");
+        document.querySelector(".modal-mask")?.remove();
+        loadCheatReport();
+      } catch (e) { OJ.toast(e.message, "error"); }
     }
 
     load();

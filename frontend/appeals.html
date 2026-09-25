@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>我的标记与申诉 - 在线代码评测与竞赛系统</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <div id="nav"></div>
+
+  <div class="container">
+    <div class="page-head">
+      <div>
+        <h1>⚖️ 我的标记与申诉</h1>
+        <div class="sub">系统基于代码相似度自动标记疑似抄袭，如属误判可在此提交申诉说明</div>
+      </div>
+      <div class="flex gap-8">
+        <select id="stateFilter" style="width:auto" onchange="load()">
+          <option value="">全部状态</option>
+          <option value="pending">待申诉</option>
+          <option value="appealed">待复核</option>
+          <option value="upheld">维持原判</option>
+          <option value="revoked">已撤销</option>
+        </select>
+        <button class="btn btn-outline" onclick="load()">🔄 刷新</button>
+      </div>
+    </div>
+
+    <div class="alert-info" id="notice">
+      检测只代表「代码高度相似、需要人工核实」，并不直接等同于作弊结论。
+      你可以查看自己被标记的提交与相似位置，并提交一段申诉说明，管理员复核后会给出「维持原判」或「撤销标记」的结论。
+    </div>
+
+    <div class="stat-grid" id="flagCards"></div>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>标记时间</th><th>题目</th><th>语言</th>
+              <th class="text-center">相似度</th><th class="text-center">状态</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="list"><tr><td colspan="6" class="empty"><span class="spinner"></span> 加载中…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/app.js"></script>
+  <script>
+    OJ.boot("appeals");
+
+    const STATE_LABELS = {
+      pending: { cls: "orange", text: "待申诉" },
+      appealed: { cls: "PENDING", text: "申诉待复核" },
+      upheld: { cls: "WA", text: "维持原判" },
+      revoked: { cls: "AC", text: "已撤销" },
+    };
+
+    function stateBadge(state) {
+      const s = STATE_LABELS[state] || STATE_LABELS.pending;
+      return `<span class="badge ${s.cls}">${s.text}</span>`;
+    }
+
+    async function load() {
+      let me;
+      try { me = await OJ.requireAuth(); } catch (e) { return; }
+      const state = OJ.el("stateFilter").value;
+      const tbody = OJ.el("list");
+      try {
+        const d = await OJ.api("/cheat-reports/my");
+        renderCards(d.flags || {});
+        let items = d.items || [];
+        if (state) items = items.filter(x => x.state === state);
+        if (!items.length) {
+          tbody.innerHTML = `<tr><td colspan="6" class="empty">${state ? "该状态下暂无报告" : "暂无被标记的记录 🎉"}</td></tr>`;
+          return;
+        }
+        tbody.innerHTML = items.map(x => `
+          <tr>
+            <td class="mono muted">${OJ.fmtTime(x.detected_at)}</td>
+            <td>${OJ.esc(x.problem_title || x.problem_id)} <span class="muted mono">${OJ.esc(x.problem_id)}</span></td>
+            <td class="mono">${OJ.esc(x.a.language || "-")}</td>
+            <td class="text-center"><span class="badge ${x.similarity >= 0.95 ? "WA" : "orange"}">${((x.similarity || 0) * 100).toFixed(1)}%</span></td>
+            <td class="text-center">${stateBadge(x.state)}</td>
+            <td class="text-right"><button class="btn btn-outline btn-sm" onclick="viewDetail('${OJ.esc(x.rid)}')">详情 / 申诉</button></td>
+          </tr>`).join("");
+      } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="6" class="empty">${OJ.esc(e.message)}</td></tr>`;
+      }
+    }
+
+    function renderCards(f) {
+      OJ.el("flagCards").innerHTML = `
+        <div class="stat-card"><div class="val">${f.total || 0}</div><div class="lbl">被标记总数</div></div>
+        <div class="stat-card"><div class="val" style="color:var(--orange)">${f.pending || 0}</div><div class="lbl">待申诉</div></div>
+        <div class="stat-card"><div class="val" style="color:var(--cyan)">${f.appealed || 0}</div><div class="lbl">申诉待复核</div></div>
+        <div class="stat-card"><div class="val" style="color:var(--red)">${f.upheld || 0}</div><div class="lbl">维持原判</div></div>
+        <div class="stat-card"><div class="val" style="color:var(--green)">${f.revoked || 0}</div><div class="lbl">已撤销</div></div>`;
+    }
+
+    async function viewDetail(rid) {
+      try {
+        const d = await OJ.api("/cheat-reports/my/" + rid);
+        OJ.openModal("标记详情", detailHTML(d)).querySelector(".modal").style.maxWidth = "960px";
+      } catch (e) { OJ.toast(e.message, "error"); }
+    }
+
+    function diffRowsHTML(diff) {
+      // 用户侧：只展示自己的代码（A 列）与匹配类型；B 列仅占位，不显示对方内容
+      return (diff.rows || []).map(r => {
+        const a = r.a, b = r.b;
+        return `<tr class="diff-row diff-${r.type}">
+          <td class="ln">${a ? a.no : ""}</td>
+          <td class="code-cell">${a ? OJ.esc(a.text || " ") : ""}</td>
+          <td class="ln">${b && b.no ? "…" : ""}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    function detailHTML(d) {
+      const diff = d.diff || { rows: [], stats: {} };
+      const st = diff.stats || {};
+      const appeal = d.appeal || {};
+      const hasAppeal = !!appeal.content;
+      const handled = d.state === "upheld" || d.state === "revoked";
+      const review = (d.reviews || []).slice(-1)[0] || {};
+
+      let appealBlock;
+      if (handled) {
+        // 处理后：展示结论 + 申诉内容 + 复核信息（与待处理形态明显不同）
+        const upheld = d.state === "upheld";
+        appealBlock = `
+          <div class="result-banner ${upheld ? "banner-upheld" : "banner-revoked"}">
+            <span class="banner-title">${upheld ? "🔴 复核结论：维持原判" : "🟢 复核结论：撤销标记"}</span>
+            <span class="muted">${upheld ? "管理员复核后认为抄袭嫌疑成立" : "管理员复核后认为不构成抄袭，标记已撤销"}</span>
+          </div>
+          <div class="appeal-box">
+            <div class="appeal-meta">我的申诉说明 · ${OJ.fmtTime(appeal.submitted_at)}</div>
+            <div class="appeal-content">${OJ.esc(appeal.content || "")}</div>
+            ${review.note ? `<div class="review-note"><b>管理员备注：</b>${OJ.esc(review.note)}</div>` : ""}
+            <div class="appeal-meta muted">复核人：${OJ.esc(review.admin_name || "-")} · 复核时间：${OJ.fmtTime(review.reviewed_at)}</div>
+          </div>`;
+      } else if (hasAppeal) {
+        // 已申诉待复核：只读展示 + 提示
+        appealBlock = `
+          <div class="result-banner banner-pending">
+            <span class="banner-title">⏳ 申诉已提交，等待管理员复核</span>
+          </div>
+          <div class="appeal-box">
+            <div class="appeal-meta">我的申诉说明 · ${OJ.fmtTime(appeal.submitted_at)}（复核前可修改）</div>
+            <div class="appeal-content">${OJ.esc(appeal.content)}</div>
+          </div>
+          <details class="mt-8"><summary class="muted" style="cursor:pointer">修改申诉说明</summary>
+            <div class="form-group mt-8">
+              <textarea id="appealText" class="form-control" rows="6" maxlength="2000">${OJ.esc(appeal.content)}</textarea>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="submitAppeal('${OJ.esc(d.rid)}')">重新提交申诉</button>
+          </details>`;
+      } else {
+        // 未申诉：突出申诉入口
+        appealBlock = `
+          <div class="result-banner banner-open">
+            <span class="banner-title">📝 你尚未提交申诉</span>
+            <span class="muted">如果你认为这是误判（如模板代码、独立撞车等），请填写说明，管理员会人工复核</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label">申诉说明</label>
+            <textarea id="appealText" class="form-control" rows="6" maxlength="2000" placeholder="请说明代码来源、实现思路、可佐证的材料等（最多 2000 字）"></textarea>
+          </div>
+          <button class="btn btn-primary" onclick="submitAppeal('${OJ.esc(d.rid)}')">提交申诉</button>`;
+      }
+
+      return `
+        <div class="detail-meta flex wrap gap-12">
+          <span>题目：<b>${OJ.esc(d.problem_title || d.problem_id)}</b></span>
+          <span>相似度：<span class="badge ${d.similarity >= 0.95 ? "WA" : "orange"}">${((d.similarity || 0) * 100).toFixed(1)}%</span></span>
+          <span>行匹配率：<b class="mono">${((st.line_match_ratio || 0) * 100).toFixed(1)}%</b></span>
+          <span>标记时间：<span class="mono muted">${OJ.fmtTime(d.detected_at)}</span></span>
+          <span>${stateBadge(d.state)}</span>
+        </div>
+
+        <label class="form-label mt-16">我的提交代码（高亮行为与另一份提交相同/相近的位置）</label>
+        <div class="diff-legend">
+          <span><i class="lg lg-equal"></i>完全一致</span>
+          <span><i class="lg lg-similar"></i>结构相近</span>
+          <span><i class="lg lg-delete"></i>仅我的代码有</span>
+        </div>
+        ${d.a.submission_exists ? `
+        <div class="diff-wrap">
+          <table class="diff-table"><tbody>
+            <tr class="diff-head"><td></td><td>我的代码（提交 ${OJ.esc(d.a.submission_id)}）</td><td></td></tr>
+            ${diffRowsHTML(diff)}
+          </tbody></table>
+        </div>` : `<div class="empty">提交代码已不在存储中，无法展示对比</div>`}
+
+        <div class="mt-16"></div>
+        ${appealBlock}
+        <div class="modal-actions">
+          <button class="btn btn-outline" onclick="this.closest('.modal-mask').remove();load()">关闭</button>
+        </div>`;
+    }
+
+    async function submitAppeal(rid) {
+      const content = (OJ.el("appealText").value || "").trim();
+      if (!content) { OJ.toast("申诉说明不能为空", "error"); return; }
+      try {
+        await OJ.api("/cheat-reports/my/" + rid + "/appeal", { method: "POST", body: { content } });
+        OJ.toast("申诉已提交", "success");
+        document.querySelector(".modal-mask")?.remove();
+        load();
+      } catch (e) { OJ.toast(e.message, "error"); }
+    }
+
+    load();
+  </script>
+</body>
+</html>

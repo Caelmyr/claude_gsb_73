@@ -105,11 +105,4 @@ def verdicts():
     return ok(dict(c))
 
 
-@stats_bp.get("/stats/cheat-report")
-def cheat_report():
-    from backend.api import get_current_user, err
-    user = get_current_user()
-    if not user or user.get("role") != "admin":
-        return err("需要管理员权限", 403, 403)
-    from backend.judge import cheat
-    return ok(cheat.get_report())
+# 防作弊报告与申诉的接口见 backend/api/appeals.py（/cheat-reports*）

@@ -72,7 +72,11 @@ def login():
 @auth_bp.get("/auth/me")
 @require_auth
 def me():
-    return ok(_public_user(request.user))
+    user = _public_user(request.user)
+    # 当前用户被标记的作弊报告数量（用于导航红点 / 我的申诉页）
+    from backend.judge import cheat
+    user["cheat_flags"] = cheat.user_flags(request.user["id"])
+    return ok(user)
 
 
 @auth_bp.post("/auth/logout")
